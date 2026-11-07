@@ -155,6 +155,8 @@ const resultCache = sharedState.__pickAMovieAiSearchCache ?? new Map<string, Cac
 sharedState.__pickAMovieAiSearchRateLimits = rateLimits;
 sharedState.__pickAMovieAiSearchCache = resultCache;
 
+const catalogGenres = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery", "Romance", "Science Fiction", "TV Movie", "Thriller", "War", "Western"] as const;
+
 const researchSchema = {
   type: "object",
   additionalProperties: false,
@@ -168,7 +170,7 @@ const researchSchema = {
       properties: {
         yearMin: { type: ["integer", "null"], minimum: 1880, maximum: 2100 },
         yearMax: { type: ["integer", "null"], minimum: 1880, maximum: 2100 },
-        genres: { type: "array", maxItems: 5, items: { type: "string", maxLength: 40 } },
+        genres: { type: "array", maxItems: 5, items: { type: "string", enum: catalogGenres } },
         people: { type: "array", maxItems: 5, items: { type: "string", maxLength: 80 } },
         franchise: { type: ["string", "null"], maxLength: 100 },
         runtimeMin: { type: ["integer", "null"], minimum: 30, maximum: 300 },
@@ -343,6 +345,25 @@ function normalizeTitle(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+// Model labels describe subgenres as well as catalog genres. Keep that meaning
+// for ranking, but never require TMDB to contain a label it cannot represent.
+export function normalizeResearchGenres(research: ResearchResult): ResearchResult {
+  const themes = [...research.softPreferences.themes];
+  const genres = research.hardConstraints.genres.flatMap((label) => {
+    const normalized = normalizeTitle(label);
+    const canonical = catalogGenres.find((genre) => normalizeTitle(genre) === normalized);
+    if (canonical) return [canonical];
+    if (!themes.includes(label)) themes.push(label);
+    if (["sci fi", "scifi"].includes(normalized)) return ["Science Fiction"];
+    return catalogGenres.filter((genre) => (` ${normalized} `).includes(` ${normalizeTitle(genre)} `));
+  });
+  return {
+    ...research,
+    hardConstraints: { ...research.hardConstraints, genres: [...new Set(genres)] },
+    softPreferences: { ...research.softPreferences, themes },
+  };
+}
+
 function releasedYear(movie: TmdbMovie) { return Number((movie.release_date || "").slice(0, 4)) || null; }
 
 export function selectTmdbMatch(candidate: ResearchCandidate, results: TmdbMovie[]) {
@@ -493,7 +514,7 @@ const tmdbGenreIds: Record<string, number> = {
   action: 28, adventure: 12, animation: 16, comedy: 35, crime: 80, documentary: 99,
   drama: 18, family: 10751, fantasy: 14, history: 36, horror: 27, music: 10402,
   mystery: 9648, romance: 10749, "science fiction": 878, "sci fi": 878, thriller: 53,
-  war: 10752, western: 37,
+  war: 10752, western: 37, "tv movie": 10770,
 };
 
 async function resolveDiscoveryRoute(apiKey: string, research: ResearchResult) {
@@ -624,7 +645,7 @@ function deterministicVerification(query: string, research: ResearchResult, reso
 }
 
 async function cacheKey(query: string, filters: SearchFilters) {
-  const input = new TextEncoder().encode(`luna-v1|${query.toLowerCase().replace(/\s+/g, " ")}|${JSON.stringify(filters)}`);
+  const input = new TextEncoder().encode(`luna-v2|${query.toLowerCase().replace(/\s+/g, " ")}|${JSON.stringify(filters)}`);
   const digest = await globalThis.crypto.subtle.digest("SHA-256", input);
   return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
@@ -652,7 +673,7 @@ async function createAiMovieSearch(body: SearchBody, rateLimitKey: string): Prom
       schema: researchSchema,
       schemaName: "low_cost_movie_intent",
       maxOutputTokens: maxModelOutputTokens,
-      instructions: `Interpret a movie-discovery request for a TMDB-grounded decision engine. Today is ${new Date().toISOString().slice(0, 10)}. This is the only model call, so be compact and precise. Use collection for objective sets, franchises, filmographies, studios, decades, or requests for all/list/every; use curated for subjective recommendations and similarity. Separate explicit objective requirements into hardConstraints. Put tone, themes, pacing, familiarity, and negative degree preferences such as "less gross" into softPreferences unless the user explicitly excludes a concrete genre, person, title, or property. Negative degree preferences must materially affect seed selection: do not seed a movie known to be equally or more graphic, crude, gross, or explicit when the user asks for less of that quality. Identify a referenceMovie for "like" and "similar to" prompts. Return 3-20 canonical theatrical movie seeds with exact release years and one short, title-specific inclusion reason. For collections, include the central released members in canonical relevance order. For vague prompts, choose credible, recognizable examples that genuinely express the requested qualities rather than titles that merely repeat prompt words. Set includeUnreleased only when explicitly requested. Do not invent titles or include television. Do not claim current web facts; TMDB will handle current release and availability data. Return only the schema.`,
+      instructions: `Interpret a movie-discovery request for a TMDB-grounded decision engine. Today is ${new Date().toISOString().slice(0, 10)}. This is the only model call, so be compact and precise. Use collection for objective sets, franchises, filmographies, studios, decades, or requests for all/list/every; use curated for subjective recommendations and similarity. Separate explicit objective requirements into hardConstraints. Put tone, themes, pacing, familiarity, and negative degree preferences such as "less gross" into softPreferences unless the user explicitly excludes a concrete genre, person, title, or property. Negative degree preferences must materially affect seed selection: do not seed a movie known to be equally or more graphic, crude, gross, or explicit when the user asks for less of that quality. Identify a referenceMovie for "like" and "similar to" prompts. Return 3-20 canonical theatrical movie seeds with exact release years and one short, title-specific inclusion reason. For collections, include the central released members in canonical relevance order. For vague prompts, choose credible, recognizable examples that genuinely express the requested qualities rather than titles that merely repeat prompt words. Set includeUnreleased only when explicitly requested. Do not invent titles or include television. Do not claim current web facts; TMDB will handle current release and availability data. Use only the enumerated TMDB catalog genres in hardConstraints.genres: for example psychological thriller means Thriller plus psychological themes in softPreferences, never a compound genre. A-list actors or famous cast is a familiarity preference, not a literal person name or a requirement to include several particular actors. Only put people explicitly named by the user in hardConstraints.people. Return only the schema.`,
       input: `${query}${filterDescription(filters)}`,
     });
   } catch (error) {
@@ -660,7 +681,7 @@ async function createAiMovieSearch(body: SearchBody, rateLimitKey: string): Prom
     return { status: 502, body: { error: "AI research was unavailable" } };
   }
 
-  const research = researchResponse.value;
+  const research = normalizeResearchGenres(researchResponse.value);
   const resolved = await resolveCandidates(tmdbKey, research);
   if (!resolved.length) return { status: 422, body: { error: "AI research did not resolve to verified TMDB movies" } };
 

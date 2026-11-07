@@ -27,3 +27,10 @@ assert.equal(blendPromptRelevance(0.8), 0.8);
 assert(blendPromptRelevance(0.4, 1) > blendPromptRelevance(0.8, 0.1), "strong prompt relevance must outweigh a modest personalization advantage");
 
 console.log("prompt-retrieval verification passed");
+
+const olderThriller = parseAskIntent("Old psychological thriller with A-list actors");
+assert.equal(olderThriller.genre, "Thriller");
+assert.equal(olderThriller.sortBy, "popularity.desc", "old should prefer recognizable older films, not the earliest shorts");
+assert.equal(olderThriller.yearTo, new Date().getFullYear() - 20);
+assert.equal(parseAskIntent("old thrillers from the 1990s").yearTo, 1999, "an explicit era wins over the broad old interpretation");
+assert.equal(parseAskIntent("oldest thrillers").sortBy, "primary_release_date.asc", "explicit oldest ordering remains available");

@@ -133,9 +133,13 @@ export function parseAskIntent(query: string): AskIntent {
   if (/\b(?:new|newer|recent|latest)\b/.test(normalized)) {
     sortBy = "primary_release_date.desc";
     filters.push({ label: "Sort", value: "Newest first" });
-  } else if (/\b(?:classic|older|old)\b/.test(normalized)) {
+  } else if (/\b(?:oldest|earliest)\b/.test(normalized)) {
     sortBy = "primary_release_date.asc";
     filters.push({ label: "Sort", value: "Oldest first" });
+  } else if (/\b(?:classic|older|old)\b/.test(normalized)) {
+    // Prefer recognizable older films, not the earliest surviving shorts.
+    // Explicit dates take precedence over this broad interpretation.
+    if (!yearFrom && !yearTo) yearTo = new Date().getFullYear() - 20;
   } else if (/\b(?:best|top|highest rated|great)\b/.test(normalized)) {
     sortBy = "vote_average.desc";
     filters.push({ label: "Sort", value: "Highest rated" });
